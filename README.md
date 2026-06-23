@@ -50,6 +50,12 @@ salesperson/employee/…), **search‑as‑you‑type**, **sortable columns**, a
 | **Accounting** | Payment‑status & invoiced‑by‑salesperson charts, invoice table |
 | **Expenses** | Expenses by status, expense table |
 | **Recruitment** | Applicants by stage & by position, applicant table |
+| **Helpdesk** | Tickets by stage & by assignee, ticket table |
+| **Point of Sale** | Orders by status + sales by cashier, order table |
+
+> **Pages adapt to your Odoo:** any module that isn't installed — or that your user
+> doesn't have read access to — is detected on login and its page is **hidden
+> automatically**, so you only ever see the apps you actually use.
 
 ### Task timer
 - Start/stop a timer against any of your Odoo project tasks
@@ -93,7 +99,7 @@ Grab the latest `odoo-companion_*_all.deb` from the
 [**Releases**](../../releases) page, then:
 
 ```bash
-sudo apt install ./odoo-companion_2.20.1-1_all.deb
+sudo apt install ./odoo-companion_2.21.0-1_all.deb
 ```
 
 `apt` resolves the dependencies automatically. (If you use `dpkg -i` instead, run
@@ -323,6 +329,9 @@ are left untouched; delete them manually if you want a truly clean slate.
 
 ## 📋 Changelog (recent)
 
+- **2.21.0** — Added **Point of Sale** and **Helpdesk** pages (charts, filters,
+  clickable tables); pages for modules that aren't installed or the user can't access
+  are now hidden automatically.
 - **2.20.1** — Hardened autostart: the background service (tray + notifications) starts
   automatically on login after every reboot, with `StartLimitIntervalSec=0` so it never
   stops retrying if network/keyring/server aren't ready yet at login.

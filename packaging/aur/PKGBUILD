@@ -1,0 +1,30 @@
+# Maintainer: Rafiur Rahman Rafit <support@dotbdsolutions.com>
+pkgname=odoo-companion
+pkgver=2.21.0
+pkgrel=1
+pkgdesc="Native Odoo dashboard, task timer and desktop notifications"
+arch=('any')
+url="https://github.com/rafit612/odoo-companion-linux"
+license=('custom')
+depends=(
+  'python'
+  'python-gobject'
+  'python-cairo'
+  'python-requests'
+  'gtk4'
+  'gtk3'
+  'libadwaita'
+  'libsecret'
+  'libnotify'
+  'libayatana-appindicator'
+  'xdg-utils'
+)
+install="$pkgname.install"
+source=("$pkgname-$pkgver.tar.gz::https://github.com/rafit612/odoo-companion-linux/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+  cd "$srcdir/odoo-companion-linux-$pkgver"
+  cp -a package/usr "$pkgdir/usr"
+  find "$pkgdir" -depth -name '__pycache__' -type d -exec rm -rf {} +
+}

@@ -1,0 +1,17 @@
+#!/usr/bin/make -f
+# Odoo Companion is a pure-Python + data package: there is nothing to compile,
+# so we just install the prebuilt payload tree from package/usr into the
+# package destdir via debhelper.
+
+%:
+	dh $@
+
+override_dh_auto_build:
+
+override_dh_auto_test:
+
+override_dh_auto_install:
+	mkdir -p debian/odoo-companion
+	cp -a package/usr debian/odoo-companion/usr
+	# Never ship byte-compiled caches.
+	find debian/odoo-companion -depth -name '__pycache__' -type d -exec rm -rf {} +

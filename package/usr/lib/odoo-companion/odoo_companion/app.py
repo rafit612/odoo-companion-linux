@@ -274,6 +274,26 @@ PICKING_STATE = {"draft": "Draft", "waiting": "Waiting", "confirmed": "Waiting",
 PAYMENT_STATE = {"not_paid": "Not Paid", "in_payment": "In Payment", "paid": "Paid", "partial": "Partially Paid", "reversed": "Reversed", "invoicing_legacy": "Legacy"}
 EXPENSE_STATE = {"draft": "To Report", "reported": "To Submit", "submit": "Submitted", "approve": "Approved", "post": "Posted", "done": "Done", "refused": "Refused"}
 LEAVE_STATE = {"draft": "To Submit", "confirm": "To Approve", "validate1": "Second Approval", "validate": "Approved", "refuse": "Refused", "cancel": "Cancelled"}
+POS_STATE = {"draft": "New", "paid": "Paid", "done": "Posted", "invoiced": "Invoiced", "cancel": "Cancelled"}
+
+# Maps a page's stack name to the module-access key (see MODULE_MODELS). Pages
+# whose module isn't installed or the user can't read are hidden. Pages not
+# listed here (Dashboard, Activities, Timer, Notifications, Settings) always show.
+PAGE_MODULE = {
+    "attendance": "attendance",
+    "time-off": "leave",
+    "sales": "sale",
+    "crm": "crm",
+    "project": "project",
+    "purchase": "purchase",
+    "inventory": "stock",
+    "accounting": "account",
+    "expenses": "expense",
+    "recruitment": "recruitment",
+    "helpdesk": "helpdesk",
+    "point-of-sale": "pos",
+    "timesheets": "timesheet",
+}
 
 
 def _status_cell(label, kind=None):
@@ -351,6 +371,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.refresh_timer()
         self.refresh_notifications()
         self._loaded.update({"dashboard", "notifications", "settings"})
+        self.load_module_access()
         GLib.timeout_add_seconds(1, self._tick_timer_label)
 
     def add_page(self, title, icon_name=None):
@@ -388,6 +409,33 @@ class MainWindow(Gtk.ApplicationWindow):
         self.view_stack.set_visible_child_name(name)
         self._nav_syncing = False
         self._lazy_load(name)
+
+    def load_module_access(self):
+        """Hide pages for modules that aren't installed or the user can't read."""
+        def task():
+            return OdooClient().check_module_access()
+
+        def done(access, error):
+            if error or not access:
+                return
+            self.apply_module_access(access)
+
+        run_async(task, done)
+
+    def apply_module_access(self, access):
+        for name, module_key in PAGE_MODULE.items():
+            # Default to visible when detection is missing, so a detection hiccup
+            # never hides a working page.
+            allowed = access.get(module_key, True)
+            button = self._nav_buttons.get(name)
+            if not button:
+                continue
+            target = button.get_parent() or button  # the FlowBoxChild wrapper
+            target.set_visible(bool(allowed))
+            if not allowed and self.view_stack.get_visible_child_name() == name:
+                dashboard_btn = self._nav_buttons.get("dashboard")
+                if dashboard_btn:
+                    dashboard_btn.set_active(True)
 
     def _lazy_load(self, name):
         if name in self._loaded:
@@ -1323,6 +1371,45 @@ class MainWindow(Gtk.ApplicationWindow):
                 "summary": lambda rows: f"{len(rows)} applicants",
                 "odoo_path": "recruitment",
             },
+            {
+                "key": "helpdesk", "title": "Helpdesk", "icon": "help-browser-symbolic",
+                "fetch": lambda p: FeatureRunner().fetch_helpdesk(year=p["year"], month=p["month"], search=p["search"]),
+                "filters": [
+                    {"id": "year", "kind": "year"},
+                    {"id": "month", "kind": "month"},
+                    {"id": "team", "kind": "m2o", "field": "team_id", "all_label": "All teams"},
+                    {"id": "stage", "kind": "m2o", "field": "stage_id", "all_label": "All stages"},
+                    {"id": "user", "kind": "m2o", "field": "user_id", "all_label": "All assignees"},
+                    {"id": "search", "kind": "search", "placeholder": "Search ticket or customer..."},
+                ],
+                "charts": [
+                    {"title": "Tickets by Stage", "key": lambda r: m2o_name(r, "stage_id")},
+                    {"title": "Tickets by Assignee", "key": lambda r: m2o_name(r, "user_id", "(unassigned)")},
+                ],
+                "columns": ["Ticket", "Customer", "Assigned", "Team", "Stage", "Created"],
+                "row": lambda r: ([r.get("name"), m2o_name(r, "partner_id", "-"), m2o_name(r, "user_id", "-"), m2o_name(r, "team_id", "-"), m2o_name(r, "stage_id"), fmt_date(r.get("create_date"))], "helpdesk.ticket", r.get("id")),
+                "summary": lambda rows: f"{len(rows)} tickets",
+                "odoo_path": "helpdesk",
+            },
+            {
+                "key": "point-of-sale", "title": "Point of Sale", "icon": "emblem-money-symbolic",
+                "fetch": lambda p: FeatureRunner().fetch_pos(year=p["year"], month=p["month"], search=p["search"]),
+                "filters": [
+                    {"id": "year", "kind": "year"},
+                    {"id": "month", "kind": "month"},
+                    {"id": "status", "kind": "choice", "choices": [("", "All statuses"), ("draft", "New"), ("paid", "Paid"), ("done", "Posted"), ("invoiced", "Invoiced")], "match": lambda r, v: r.get("state") == v},
+                    {"id": "user", "kind": "m2o", "field": "user_id", "all_label": "All cashiers"},
+                    {"id": "search", "kind": "search", "placeholder": "Search order or customer..."},
+                ],
+                "charts": [
+                    {"title": "Orders by Status", "kind": "bar", "key": lambda r: POS_STATE.get(r.get("state"), r.get("state"))},
+                    {"title": "Sales by Cashier", "key": lambda r: m2o_name(r, "user_id"), "value": lambda r: r.get("amount_total") or 0, "fmt": fmt_money},
+                ],
+                "columns": ["Order", "Customer", "Cashier", "Total", "Status", "Date"],
+                "row": lambda r: ([r.get("name"), m2o_name(r, "partner_id", "-"), m2o_name(r, "user_id", "-"), fmt_money(r.get("amount_total")), POS_STATE.get(r.get("state"), r.get("state")), fmt_date(r.get("date_order"))], "pos.order", r.get("id")),
+                "summary": lambda rows: f"{len(rows)} orders · total {fmt_money(sum(r.get('amount_total') or 0 for r in rows))}",
+                "odoo_path": "point-of-sale",
+            },
         ]
 
     def render_timesheet_entries(self):
@@ -1685,6 +1772,7 @@ class MainWindow(Gtk.ApplicationWindow):
             self.refresh_timer()
             self.refresh_notifications()
             self.refresh_timesheets()
+            self.load_module_access()
 
         run_async(task, done)
 

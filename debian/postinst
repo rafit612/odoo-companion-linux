@@ -1,0 +1,68 @@
+#!/bin/sh
+set -e
+
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl --global enable odoo-companion.service >/dev/null 2>&1 || true
+fi
+
+install_desktop_shortcut() {
+    user_name="${SUDO_USER:-}"
+    if [ -z "$user_name" ] || [ "$user_name" = "root" ]; then
+        return
+    fi
+
+    user_home="$(getent passwd "$user_name" | cut -d: -f6)"
+    if [ -z "$user_home" ] || [ ! -d "$user_home" ]; then
+        return
+    fi
+
+    desktop_dir="$user_home/Desktop"
+    if command -v runuser >/dev/null 2>&1; then
+        detected_dir="$(runuser -u "$user_name" -- xdg-user-dir DESKTOP 2>/dev/null || true)"
+        if [ -n "$detected_dir" ]; then
+            desktop_dir="$detected_dir"
+        fi
+    fi
+
+    mkdir -p "$desktop_dir"
+    shortcut="$desktop_dir/Odoo Companion.desktop"
+    cp /usr/share/applications/odoo-companion.desktop "$shortcut"
+    chmod 755 "$shortcut"
+    chown "$user_name:$(id -gn "$user_name")" "$shortcut" "$desktop_dir" 2>/dev/null || true
+    if command -v runuser >/dev/null 2>&1 && command -v gio >/dev/null 2>&1; then
+        runuser -u "$user_name" -- gio set -t string "$shortcut" metadata::trusted true >/dev/null 2>&1 || true
+    fi
+}
+
+restart_user_service() {
+    user_name="${SUDO_USER:-}"
+    if [ -z "$user_name" ] || [ "$user_name" = "root" ]; then
+        return
+    fi
+
+    user_id="$(id -u "$user_name" 2>/dev/null || true)"
+    if [ -z "$user_id" ] || [ ! -S "/run/user/$user_id/bus" ]; then
+        return
+    fi
+
+    runtime_dir="/run/user/$user_id"
+    bus_address="unix:path=$runtime_dir/bus"
+    runuser -u "$user_name" -- env XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$bus_address" systemctl --user daemon-reload >/dev/null 2>&1 || true
+    runuser -u "$user_name" -- env XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$bus_address" systemctl --user enable odoo-companion.service >/dev/null 2>&1 || true
+    runuser -u "$user_name" -- env XDG_RUNTIME_DIR="$runtime_dir" DBUS_SESSION_BUS_ADDRESS="$bus_address" systemctl --user restart odoo-companion.service >/dev/null 2>&1 || true
+}
+
+install_desktop_shortcut
+restart_user_service
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
+fi
+
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+fi
+
+#DEBHELPER#
+
+exit 0

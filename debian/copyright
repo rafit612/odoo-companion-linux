@@ -1,0 +1,11 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: odoo-companion
+Source: https://github.com/rafit612/odoo-companion-linux
+
+Files: *
+Copyright: 2026 DotBD Solutions Limited
+License: proprietary
+ Copyright (c) 2026 DotBD Solutions Limited. All rights reserved.
+ .
+ Replace this stanza with the text of your chosen license (for example MIT)
+ before distributing publicly, and update debian/control accordingly.

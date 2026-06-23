@@ -1,0 +1,21 @@
+odoo-companion (2.21.0) noble; urgency=medium
+
+  * Added Point of Sale and Helpdesk pages (charts, filters, clickable tables).
+  * Pages for modules that aren't installed or the user can't access are now
+    hidden automatically.
+
+ -- Rafiur Rahman Rafit <support@dotbdsolutions.com>  Wed, 24 Jun 2026 00:49:07 +0600
+
+odoo-companion (2.20.1) noble; urgency=medium
+
+  * Packaged for source builds (Launchpad PPA / openSUSE Build Service).
+  * Live attendance in the system tray: check-in time, live worked-time counter,
+    last check-out with date.
+  * Smart "you haven't checked in" warning that respects the working-hours
+    calendar, public holidays, time off and a configurable grace window.
+  * Hardened autostart: background service starts on login after every reboot
+    and never stops retrying (StartLimitIntervalSec=0).
+  * All module pages with donut/bar charts, filters, search-as-you-type and
+    sortable, clickable tables that open the Odoo record.
+
+ -- Rafiur Rahman Rafit <support@dotbdsolutions.com>  Wed, 24 Jun 2026 00:40:26 +0600

@@ -916,6 +916,34 @@ class FeatureRunner:
             {"order": "date desc", "limit": 500},
         )
 
+    def fetch_helpdesk(self, year=None, month=None, search=None):
+        self.client.ensure_logged_in()
+        domain = self._period_domain("create_date", year, month, is_datetime=True)
+        if search:
+            domain.append("|")
+            domain.append(["name", "ilike", search])
+            domain.append(["partner_id.name", "ilike", search])
+        return self.client.call_kw(
+            "helpdesk.ticket",
+            "search_read",
+            [domain, ["name", "partner_id", "user_id", "team_id", "stage_id", "priority", "create_date"]],
+            {"order": "create_date desc", "limit": 500},
+        )
+
+    def fetch_pos(self, year=None, month=None, search=None):
+        self.client.ensure_logged_in()
+        domain = self._period_domain("date_order", year, month, is_datetime=True)
+        if search:
+            domain.append("|")
+            domain.append(["name", "ilike", search])
+            domain.append(["partner_id.name", "ilike", search])
+        return self.client.call_kw(
+            "pos.order",
+            "search_read",
+            [domain, ["name", "partner_id", "user_id", "amount_total", "state", "date_order"]],
+            {"order": "date_order desc", "limit": 500},
+        )
+
     def fetch_recruitment(self, year=None, month=None, job_id=None, search=None):
         self.client.ensure_logged_in()
         domain = [["active", "=", True]]

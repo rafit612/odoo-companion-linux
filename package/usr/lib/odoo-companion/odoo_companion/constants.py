@@ -3,7 +3,7 @@ import os
 
 APP_ID = "com.dotbdsolutions.OdooCompanion"
 APP_NAME = "Odoo Companion"
-APP_VERSION = "2.20.1"
+APP_VERSION = "2.21.0"
 DESKTOP_ID = "odoo-companion"
 ICON_NAME = "odoo-companion"
 

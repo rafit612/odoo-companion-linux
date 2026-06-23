@@ -1,0 +1,35 @@
+Source: odoo-companion
+Section: office
+Priority: optional
+Maintainer: Rafiur Rahman Rafit <support@dotbdsolutions.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/rafit612/odoo-companion-linux
+Rules-Requires-Root: no
+
+Package: odoo-companion
+Architecture: all
+Depends: ${misc:Depends},
+         python3,
+         python3-gi,
+         python3-gi-cairo,
+         python3-cairo,
+         python3-requests,
+         gir1.2-gtk-4.0,
+         gir1.2-gtk-3.0,
+         gir1.2-adw-1,
+         gir1.2-secret-1,
+         gir1.2-notify-0.7,
+         gir1.2-ayatanaappindicator3-0.1,
+         libnotify4,
+         xdg-utils
+Description: Native Odoo dashboard, task timer and desktop notifications
+ Odoo Companion connects directly to your own Odoo instance using Odoo's
+ JSON-RPC external API. It provides native desktop notifications, a GTK4
+ dashboard with charts, notification history, a background task timer,
+ live attendance status in the system tray, and clickable, filterable
+ module pages (Sales, CRM, Project, Purchase, Inventory, Accounting,
+ Expenses, Recruitment, Time Off, Activities, Attendance, Timesheets).
+ .
+ Credentials are stored in the system keyring (libsecret); data is fetched
+ directly from your own Odoo server and never sent to any third party.
