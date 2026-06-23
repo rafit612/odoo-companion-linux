@@ -1,0 +1,42 @@
+Odoo Companion — native Linux desktop app
+=========================================
+
+A GTK4/Libadwaita app that connects to your own Odoo server over the JSON-RPC
+external API and provides desktop notifications, a multi-module dashboard with
+charts, a background task timer, and a system-tray indicator.
+
+Install (from a downloaded .deb):
+  sudo apt install ./odoo-companion_<version>_all.deb
+
+Run the app:
+  odoo-companion
+
+First run:
+  Open the Settings tab, enter your Odoo URL, database (click Detect),
+  username and password/API key, click Test login, then Save settings.
+
+Background service (keeps notifications running with the window closed):
+  systemctl --user status  odoo-companion.service
+  systemctl --user restart odoo-companion.service
+  systemctl --user enable --now odoo-companion.service   # first session
+
+Pages: Dashboard, Attendance, Time Off, Activities, Sales, CRM, Project,
+  Purchase, Inventory, Accounting, Expenses, Recruitment, Timer, Timesheets,
+  Notifications, Settings. Each data page has charts, filters, search,
+  sortable columns and rows that click through to the Odoo record.
+
+Notifications (via libnotify): Discuss messages & channels, Discuss calls,
+  inbox mentions, employee check-in/out, server up/down, and reminders
+  (no-check-in, stale CRM lead, meeting-soon, helpdesk SLA, running timer).
+
+Privacy:
+  Connects only to your configured Odoo URL — no third-party servers.
+  Credentials are stored in the system keyring (libsecret).
+  Config/state: ~/.config/odoo-companion/  and  ~/.local/share/odoo-companion/
+
+Full documentation, build instructions, and how to publish an APT repository
+(so users can `sudo apt install odoo-companion`) are in the project README on
+GitHub.
+
+Developed by Rafiur Rahman Rafit (rafiurrahmanrafit.com)
+for DotBD Solutions Limited (www.dotbdsolutions.com).

@@ -1,0 +1,17 @@
+[Unit]
+Description=Odoo Companion background polling service
+After=graphical-session.target network-online.target
+Wants=graphical-session.target network-online.target
+# Never give up restarting: if something the service needs (network, keyring,
+# Odoo server) isn't ready right after login/boot, keep retrying forever instead
+# of hitting systemd's start-rate limit and giving up.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/odoo-companion-service
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

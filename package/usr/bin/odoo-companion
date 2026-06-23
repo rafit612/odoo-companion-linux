@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+export PYTHONPATH="/usr/lib/odoo-companion${PYTHONPATH:+:$PYTHONPATH}"
+exec /usr/bin/python3 -m odoo_companion.app "$@"

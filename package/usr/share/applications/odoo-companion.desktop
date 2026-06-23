@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Odoo Companion
+Comment=Native Odoo dashboard, task timer, and desktop notifications
+Exec=odoo-companion
+Icon=odoo-companion
+Terminal=false
+Type=Application
+Categories=Office;GTK;
+StartupNotify=true

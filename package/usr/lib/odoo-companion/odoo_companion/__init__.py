@@ -1,0 +1,3 @@
+"""Native Odoo Companion package."""
+
+__version__ = "2.15.0"
