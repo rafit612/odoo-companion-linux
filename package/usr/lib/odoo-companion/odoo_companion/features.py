@@ -6,8 +6,15 @@ import webbrowser
 from datetime import datetime, timedelta, timezone
 
 from .client import OdooClient, OdooError
-from .constants import DEFAULT_ATTENDANCE_GRACE_MINUTES, DEFAULT_TIMER_REMINDER_MINUTES, NOTIFICATION_LOG_LIMIT
+from .constants import (
+    DEFAULT_ATTENDANCE_GRACE_MINUTES,
+    DEFAULT_LUNCH_REMINDER_MINUTES,
+    DEFAULT_TIMER_REMINDER_MINUTES,
+    NOTIFICATION_LOG_LIMIT,
+)
 from .storage import config_store, state_store
+
+LUNCH_OFF_WEEKDAY = 4  # Friday - lunch voting runs every day except Friday
 
 try:
     from zoneinfo import ZoneInfo
@@ -350,7 +357,8 @@ class FeatureRunner:
         if not slots:
             return {"is_workday": False, "calendar_id": calendar_id, "tz": tz, "now_cal": now_cal}
         start_hour = min(s.get("hour_from") or 0 for s in slots)
-        return {"is_workday": True, "start_hour": start_hour, "calendar_id": calendar_id, "tz": tz, "now_cal": now_cal}
+        end_hour = max(s.get("hour_to") or 0 for s in slots)
+        return {"is_workday": True, "start_hour": start_hour, "end_hour": end_hour, "calendar_id": calendar_id, "tz": tz, "now_cal": now_cal}
 
     def has_timeoff_today(self, employee_id):
         today = local_date_str()
@@ -1047,6 +1055,208 @@ class FeatureRunner:
             })
         return result
 
+    # ── Lunch vote (dbsl_info_board, Odoo 18) ────────────────────────────────
+    @staticmethod
+    def _hour_to_hm(value):
+        value = float(value or 0)
+        return f"{int(value):02d}:{int(round((value - int(value)) * 60)):02d}"
+
+    def _user_company_id(self):
+        if self.config.get("company_id"):
+            return self.config.get("company_id")
+        rows = self.client.call_kw("res.users", "read", [[self.config["uid"]], ["company_id"]])
+        return rows[0].get("company_id", [None])[0] if rows and rows[0].get("company_id") else None
+
+    def _is_checked_in_today(self):
+        employee_id = self.get_employee_id()
+        if not employee_id:
+            return False
+        bounds = local_day_bounds_for_odoo()
+        return bool(self.client.call_kw(
+            "hr.attendance",
+            "search_count",
+            [[["employee_id", "=", employee_id], ["check_in", ">=", bounds["start"]], ["check_in", "<=", bounds["end"]]]],
+        ))
+
+    def fetch_lunch_vote(self):
+        """Today's lunch-vote state for the current user, or None when the
+        dbsl_info_board module isn't installed or the user isn't an eligible
+        voter. Read-only mirror of the module's _get_lunch_voting logic."""
+        self.client.ensure_logged_in()
+        uid = self.config["uid"]
+        try:
+            company_id = self._user_company_id()
+            if not company_id:
+                return None
+            company = self.client.call_kw(
+                "res.company",
+                "read",
+                [[company_id], ["name", "lunch_voting_enabled", "lunch_vote_open_time", "lunch_vote_close_time",
+                                "lunch_voting_user_ids", "lunch_subsidy_user_ids", "lunch_full_amount"]],
+            )
+        except OdooError:
+            return None  # module not installed (fields/model absent)
+        if not company:
+            return None
+        company = company[0]
+        if not company.get("lunch_voting_enabled"):
+            return None
+        if uid not in (company.get("lunch_voting_user_ids") or []):
+            return None  # only selected users may vote
+
+        now = datetime.now().astimezone()
+        if now.date().weekday() == LUNCH_OFF_WEEKDAY:
+            return {"eligible": True, "off_day": True, "company_name": company.get("name"), "company_id": company_id}
+
+        open_time = company.get("lunch_vote_open_time") or 0.0
+        close_time = company.get("lunch_vote_close_time") or 0.0
+        now_f = now.hour + now.minute / 60.0 + now.second / 3600.0
+        is_open = (open_time <= now_f < close_time) if close_time > open_time else False
+        not_yet = now_f < open_time
+        today = local_date_str()
+        mine = self.client.call_kw(
+            "dbsl.lunch.vote",
+            "search_read",
+            [[["user_id", "=", uid], ["date", "=", today], ["company_id", "=", company_id]], ["choice"]],
+            {"limit": 1},
+        )
+        yes = self.client.call_kw("dbsl.lunch.vote", "search_count", [[["company_id", "=", company_id], ["date", "=", today], ["choice", "=", "yes"]]])
+        no = self.client.call_kw("dbsl.lunch.vote", "search_count", [[["company_id", "=", company_id], ["date", "=", today], ["choice", "=", "no"]]])
+        is_subsidized = uid in (company.get("lunch_subsidy_user_ids") or [])
+        full_amount = company.get("lunch_full_amount") or 0.0
+        pay_note = None
+        if not is_subsidized and full_amount:
+            amt = int(full_amount) if float(full_amount).is_integer() else full_amount
+            pay_note = f"You have to pay {amt} Taka for lunch."
+        return {
+            "eligible": True,
+            "off_day": False,
+            "company_id": company_id,
+            "company_name": company.get("name"),
+            "open_time": open_time,
+            "close_time": close_time,
+            "open_hm": self._hour_to_hm(open_time),
+            "close_hm": self._hour_to_hm(close_time),
+            "is_open": is_open,
+            "not_yet": not_yet,
+            "closed": (not is_open) and (not not_yet),
+            "checked_in": self._is_checked_in_today(),
+            "my_choice": mine[0]["choice"] if mine else None,
+            "yes_count": yes,
+            "no_count": no,
+            "total_count": yes + no,
+            "pay_note": pay_note,
+        }
+
+    def cast_lunch_vote(self, choice):
+        if choice not in ("yes", "no"):
+            raise OdooError("Invalid lunch choice")
+        self.client.ensure_logged_in()
+        if not self._is_checked_in_today():
+            raise OdooError("You must check in today before voting for lunch.")
+        uid = self.config["uid"]
+        company_id = self._user_company_id()
+        today = local_date_str()
+        existing = self.client.call_kw(
+            "dbsl.lunch.vote",
+            "search",
+            [[["user_id", "=", uid], ["date", "=", today], ["company_id", "=", company_id]]],
+            {"limit": 1},
+        )
+        if existing:
+            self.client.call_kw("dbsl.lunch.vote", "write", [[existing[0]], {"choice": choice}])
+        else:
+            self.client.call_kw("dbsl.lunch.vote", "create", [{"user_id": uid, "date": today, "choice": choice, "company_id": company_id}])
+        return True
+
+    def fetch_lunch_overview(self):
+        """Who voted yes / no / not-yet among the eligible users today."""
+        self.client.ensure_logged_in()
+        company_id = self._user_company_id()
+        if not company_id:
+            return None
+        try:
+            company = self.client.call_kw("res.company", "read", [[company_id], ["lunch_voting_user_ids"]])
+        except OdooError:
+            return None
+        eligible_ids = (company and company[0].get("lunch_voting_user_ids")) or []
+        if not eligible_ids:
+            return {"yes": [], "no": [], "not_voted": []}
+        users = self.client.call_kw("res.users", "read", [eligible_ids, ["name"]])
+        name_by_id = {u["id"]: u["name"] for u in users or []}
+        today = local_date_str()
+        votes = self.client.call_kw(
+            "dbsl.lunch.vote",
+            "search_read",
+            [[["date", "=", today], ["company_id", "=", company_id], ["user_id", "in", eligible_ids]], ["user_id", "choice"]],
+            {"limit": 500},
+        )
+        choice_by_uid = {v["user_id"][0]: v["choice"] for v in votes or [] if v.get("user_id")}
+        yes, no, not_voted = [], [], []
+        for eid in eligible_ids:
+            name = name_by_id.get(eid, "User")
+            choice = choice_by_uid.get(eid)
+            (yes if choice == "yes" else no if choice == "no" else not_voted).append(name)
+        return {"yes": sorted(yes), "no": sorted(no), "not_voted": sorted(not_voted)}
+
+    def _workday_ended(self, now_f):
+        attendance = state_store.read().get("attendance_self") or {}
+        if attendance.get("last_check_out_local") and not attendance.get("checked_in"):
+            return True
+        employee_id = self.get_employee_id()
+        if employee_id:
+            try:
+                info = self._today_work_info(employee_id)
+            except OdooError:
+                info = None
+            if info and info.get("is_workday") and info.get("end_hour"):
+                return now_f >= info["end_hour"]
+        return False
+
+    def poll_lunch_vote(self):
+        if is_muted(self.config, "lunch"):
+            return
+        try:
+            state = self.fetch_lunch_vote()
+        except OdooError:
+            return
+        if not state or not state.get("eligible") or state.get("off_day"):
+            return
+        if state.get("my_choice"):
+            return  # already voted - nothing to nag about
+        if not state.get("is_open"):
+            return  # can only usefully remind while the window is open
+        if not state.get("checked_in"):
+            return  # not checked in today -> can't vote, so don't nag
+
+        now = datetime.now().astimezone()
+        now_f = now.hour + now.minute / 60.0 + now.second / 3600.0
+        today_key = now.date().isoformat()
+        saved = state_store.read()
+        target = {"kind": "url", "url": f"{self.client.odoo_url}/odoo"}
+
+        # Reminder #1 - a configurable lead time before the window closes.
+        lead = float(self.config.get("lunch_vote_reminder_minutes") or DEFAULT_LUNCH_REMINDER_MINUTES)
+        minutes_to_close = (state.get("close_time", 0.0) - now_f) * 60
+        if 0 < minutes_to_close <= lead and saved.get("lunch_close_reminded_date") != today_key:
+            state_store.update(lambda s: s.__setitem__("lunch_close_reminded_date", today_key))
+            self.notify_and_remember(
+                f"lunch-close-{today_key}",
+                "Vote for lunch",
+                f"Lunch voting closes at {state.get('close_hm')} - you haven't voted yet.",
+                target,
+            )
+
+        # Reminder #2 - when the employee's work hours end / they check out.
+        if saved.get("lunch_workend_reminded_date") != today_key and self._workday_ended(now_f):
+            state_store.update(lambda s: s.__setitem__("lunch_workend_reminded_date", today_key))
+            self.notify_and_remember(
+                f"lunch-workend-{today_key}",
+                "Vote for lunch before you leave",
+                "Your work hours are over and you haven't voted for lunch yet.",
+                target,
+            )
+
     def fetch_devices(self):
         self.client.ensure_logged_in()
         return self.client.call_kw(
@@ -1424,6 +1634,7 @@ class FeatureRunner:
             self.poll_meetings_starting_soon,
             self.poll_helpdesk_sla,
             self.poll_attendance_events,
+            self.poll_lunch_vote,
         ):
             try:
                 fn()

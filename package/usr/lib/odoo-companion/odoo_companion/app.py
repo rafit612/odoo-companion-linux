@@ -23,6 +23,7 @@ from .constants import (
     APP_NAME,
     APP_VERSION,
     DEFAULT_ATTENDANCE_GRACE_MINUTES,
+    DEFAULT_LUNCH_REMINDER_MINUTES,
     DEFAULT_NOTIFICATION_POLL_SECONDS,
     DEFAULT_TIMER_REMINDER_MINUTES,
     ICON_NAME,
@@ -355,6 +356,7 @@ class MainWindow(Gtk.ApplicationWindow):
 
         self._build_dashboard_page()
         self._build_attendance_page()
+        self._build_lunch_page()
         for spec in self._module_page_specs():
             self._build_module_page(spec)
         self._build_timer_page()
@@ -372,6 +374,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.refresh_notifications()
         self._loaded.update({"dashboard", "notifications", "settings"})
         self.load_module_access()
+        self.check_lunch_availability()
         GLib.timeout_add_seconds(1, self._tick_timer_label)
 
     def add_page(self, title, icon_name=None):
@@ -444,6 +447,8 @@ class MainWindow(Gtk.ApplicationWindow):
         if name == "attendance":
             self.refresh_attendance()
             self.load_attendance_extras()
+        elif name == "lunch":
+            self.refresh_lunch()
         elif name == "timesheets":
             self.load_timesheet_filters()
             self.refresh_timesheets()
@@ -665,6 +670,131 @@ class MainWindow(Gtk.ApplicationWindow):
         self.attendance_box.append(
             self._table_card(["Employee", "Check in", "Check out", "Hours", "Status"], table_rows, "attendances")
         )
+
+    def _build_lunch_page(self):
+        self.lunch_page = self.add_page("Lunch", "emoji-food-symbolic")
+        self.lunch_page.append(section_title("Lunch vote"))
+        self.lunch_status = Gtk.Label(label="Loading…", xalign=0)
+        self.lunch_status.set_wrap(True)
+        self.lunch_page.append(self.lunch_status)
+
+        self.lunch_vote_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
+        self.lunch_page.append(self.lunch_vote_box)
+
+        self.lunch_counts = Gtk.Label(label="", xalign=0)
+        self.lunch_page.append(self.lunch_counts)
+
+        refresh = Gtk.Button(label="Refresh")
+        refresh.connect("clicked", lambda _b: self.refresh_lunch())
+        self.lunch_page.append(refresh)
+
+        self.lunch_page.append(section_title("Today's votes"))
+        self.lunch_overview_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        self.lunch_page.append(self.lunch_overview_box)
+        self._lunch_loaded = False
+
+    def check_lunch_availability(self):
+        """Hide the Lunch nav entry when the module isn't installed / the user
+        isn't an eligible voter."""
+        def task():
+            return FeatureRunner().fetch_lunch_vote()
+
+        def done(state, error):
+            button = self._nav_buttons.get("lunch")
+            if not button:
+                return
+            available = bool(state) and not error
+            target = button.get_parent() or button
+            target.set_visible(available)
+            if not available and self.view_stack.get_visible_child_name() == "lunch":
+                dashboard = self._nav_buttons.get("dashboard")
+                if dashboard:
+                    dashboard.set_active(True)
+
+        run_async(task, done)
+
+    def refresh_lunch(self):
+        def task():
+            return FeatureRunner().fetch_lunch_vote(), FeatureRunner().fetch_lunch_overview()
+
+        def done(result, error):
+            if error:
+                self.lunch_status.set_text(f"Could not load lunch vote: {error}")
+                return
+            state, overview = result
+            self.render_lunch(state, overview)
+
+        run_async(task, done)
+
+    def render_lunch(self, state, overview):
+        clear_box(self.lunch_vote_box)
+        clear_box(self.lunch_overview_box)
+        if not state or not state.get("eligible"):
+            self.lunch_status.set_text("Lunch voting isn't enabled for you (or the module isn't installed).")
+            self.lunch_counts.set_text("")
+            return
+        if state.get("off_day"):
+            self.lunch_status.set_text("No lunch voting today (Friday off).")
+            self.lunch_counts.set_text("")
+            return
+
+        window = f"Voting window: {state.get('open_hm')}–{state.get('close_hm')}"
+        if state.get("not_yet"):
+            status = f"{window} — not open yet."
+        elif state.get("is_open"):
+            status = f"{window} — open now."
+        else:
+            status = f"{window} — closed."
+        if state.get("pay_note"):
+            status += "\n" + state["pay_note"]
+        my = state.get("my_choice")
+        if my:
+            status = f"You voted: {'Yes 🍽️' if my == 'yes' else 'No'}.\n" + status
+        if not state.get("checked_in"):
+            status = "⚠ You must check in today before you can vote for lunch.\n" + status
+        self.lunch_status.set_text(status)
+
+        if state.get("is_open") and state.get("checked_in"):
+            yes_btn = Gtk.Button(label="Yes 🍽️")
+            yes_btn.add_css_class("suggested-action")
+            yes_btn.connect("clicked", lambda _b: self.cast_lunch("yes"))
+            no_btn = Gtk.Button(label="No")
+            no_btn.connect("clicked", lambda _b: self.cast_lunch("no"))
+            if my == "yes":
+                yes_btn.set_label("Yes 🍽️ ✓")
+            if my == "no":
+                no_btn.set_label("No ✓")
+            self.lunch_vote_box.append(yes_btn)
+            self.lunch_vote_box.append(no_btn)
+
+        self.lunch_counts.set_text(f"Yes: {state.get('yes_count')}  ·  No: {state.get('no_count')}  ·  Total: {state.get('total_count')}")
+
+        if overview:
+            def add_group(title, names, css):
+                header = Gtk.Label(label=f"{title} ({len(names)})", xalign=0)
+                header.add_css_class("heading")
+                if css:
+                    header.add_css_class(css)
+                self.lunch_overview_box.append(header)
+                self.lunch_overview_box.append(Gtk.Label(label=", ".join(names) or "—", xalign=0, wrap=True))
+
+            add_group("Yes", overview.get("yes") or [], "success")
+            add_group("No", overview.get("no") or [], "error")
+            add_group("Not voted", overview.get("not_voted") or [], None)
+
+    def cast_lunch(self, choice):
+        self.lunch_status.set_text("Submitting your vote…")
+
+        def task():
+            return FeatureRunner().cast_lunch_vote(choice)
+
+        def done(_result, error):
+            if error:
+                self.lunch_status.set_text(f"Vote failed: {error}")
+                return
+            self.refresh_lunch()
+
+        run_async(task, done)
 
     def _build_timer_page(self):
         self.timer_page = self.add_page("Timer", "alarm-symbolic")
@@ -1559,6 +1689,13 @@ class MainWindow(Gtk.ApplicationWindow):
         self.attendance_grace_spin.set_digits(0)
         self.settings_page.append(row_box("Warn if not checked in, grace after start time (minutes)", self.attendance_grace_spin))
 
+        self.lunch_reminder_spin = Gtk.SpinButton()
+        self.lunch_reminder_spin.set_adjustment(
+            Gtk.Adjustment(value=DEFAULT_LUNCH_REMINDER_MINUTES, lower=1, upper=120, step_increment=5)
+        )
+        self.lunch_reminder_spin.set_digits(0)
+        self.settings_page.append(row_box("Remind me to vote for lunch, minutes before it closes", self.lunch_reminder_spin))
+
         self.settings_page.append(section_title("Desktop integration"))
         self.autostart_check = Gtk.CheckButton(label="Start background service automatically after login")
         self.settings_page.append(self.autostart_check)
@@ -1621,6 +1758,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.notification_poll_spin.set_value(float(config.get("notification_poll_seconds") or DEFAULT_NOTIFICATION_POLL_SECONDS))
         self.timer_reminder_spin.set_value(float(config.get("timer_reminder_minutes") or DEFAULT_TIMER_REMINDER_MINUTES))
         self.attendance_grace_spin.set_value(float(config.get("attendance_grace_minutes") if config.get("attendance_grace_minutes") is not None else DEFAULT_ATTENDANCE_GRACE_MINUTES))
+        self.lunch_reminder_spin.set_value(float(config.get("lunch_vote_reminder_minutes") or DEFAULT_LUNCH_REMINDER_MINUTES))
         self.autostart_check.set_active(bool(config.get("autostart_enabled", True)))
         for key, check in self.mute_checks.items():
             check.set_active(bool((config.get("mute") or {}).get(key)))
@@ -1699,6 +1837,7 @@ class MainWindow(Gtk.ApplicationWindow):
             "notification_poll_seconds": max(MIN_NOTIFICATION_POLL_SECONDS, self.notification_poll_spin.get_value()),
             "timer_reminder_minutes": max(1, self.timer_reminder_spin.get_value()),
             "attendance_grace_minutes": max(0, self.attendance_grace_spin.get_value()),
+            "lunch_vote_reminder_minutes": max(1, self.lunch_reminder_spin.get_value()),
             "mute": mute,
             "autostart_enabled": self.autostart_check.get_active(),
         }

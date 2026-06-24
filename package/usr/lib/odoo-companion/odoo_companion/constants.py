@@ -3,7 +3,7 @@ import os
 
 APP_ID = "com.dotbdsolutions.OdooCompanion"
 APP_NAME = "Odoo Companion"
-APP_VERSION = "2.21.1"
+APP_VERSION = "2.22.0"
 DESKTOP_ID = "odoo-companion"
 ICON_NAME = "odoo-companion"
 
@@ -30,6 +30,9 @@ DEFAULT_TIMER_REMINDER_MINUTES = 10
 # Grace period after the scheduled work-day start before warning that the user
 # has not checked in (and isn't on leave / it isn't a holiday). User-configurable.
 DEFAULT_ATTENDANCE_GRACE_MINUTES = 15
+# How many minutes before the lunch-vote window closes to remind the user to
+# vote (only fires if they're eligible and haven't voted yet). Configurable.
+DEFAULT_LUNCH_REMINDER_MINUTES = 15
 
 MUTE_LABELS = {
     "inbox": "Inbox (mentions, assignments, follower updates)",
@@ -43,6 +46,7 @@ MUTE_LABELS = {
     "attendanceEvents": "Employee check-in/check-out alerts",
     "serverStatus": "Server online/offline alerts",
     "timesheetReminder": "Task timer still-running reminder",
+    "lunch": "Lunch vote reminders",
 }
 
 MODULE_MODELS = {
@@ -95,6 +99,7 @@ DEFAULT_CONFIG = {
     "notification_poll_seconds": DEFAULT_NOTIFICATION_POLL_SECONDS,
     "timer_reminder_minutes": DEFAULT_TIMER_REMINDER_MINUTES,
     "attendance_grace_minutes": DEFAULT_ATTENDANCE_GRACE_MINUTES,
+    "lunch_vote_reminder_minutes": DEFAULT_LUNCH_REMINDER_MINUTES,
     "mute": {key: False for key in MUTE_LABELS},
     "uid": None,
     "partner_id": None,
@@ -125,4 +130,6 @@ DEFAULT_STATE = {
     "last_poll_at": None,
     "last_notification_poll_at": None,
     "attendance_self": None,
+    "lunch_close_reminded_date": None,
+    "lunch_workend_reminded_date": None,
 }
