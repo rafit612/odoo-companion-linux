@@ -1,16 +1,18 @@
 [Unit]
 Description=Odoo Companion background polling service
-After=graphical-session.target network-online.target
-Wants=graphical-session.target network-online.target
-# Never give up restarting: if something the service needs (network, keyring,
-# Odoo server) isn't ready right after login/boot, keep retrying forever instead
-# of hitting systemd's start-rate limit and giving up.
+# Order after the graphical session when one exists, but do NOT Wants= it: a
+# Wants=graphical-session.target here gets pulled into the GDM greeter's own
+# session and can break the login screen (black screen / no login prompt).
+# After= alone is ordering-only and is ignored when the target isn't present.
+After=graphical-session.target
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/odoo-companion-service
-Restart=always
+# on-failure (not always) so the clean "not a real user session" exit and the
+# "autostart disabled" exit don't get restarted in a tight loop.
+Restart=on-failure
 RestartSec=10
 
 [Install]

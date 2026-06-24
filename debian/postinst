@@ -1,9 +1,17 @@
 #!/bin/sh
 set -e
 
+# IMPORTANT: never enable this user service *globally*. A global enable starts it
+# in every user session - including the GDM login greeter (user "gdm") - which
+# can break the login screen (black screen, no login prompt). It is enabled
+# per-user (for the installing user) further down instead.
+#
+# Also actively remove any global enable left behind by older, broken packages
+# (2.21.0 and earlier) so upgrading repairs an affected machine.
 if command -v systemctl >/dev/null 2>&1; then
-    systemctl --global enable odoo-companion.service >/dev/null 2>&1 || true
+    systemctl --global disable odoo-companion.service >/dev/null 2>&1 || true
 fi
+rm -f /etc/systemd/user/default.target.wants/odoo-companion.service 2>/dev/null || true
 
 install_desktop_shortcut() {
     user_name="${SUDO_USER:-}"

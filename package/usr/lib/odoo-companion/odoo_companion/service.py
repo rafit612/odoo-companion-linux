@@ -1,5 +1,6 @@
 import argparse
 import fcntl
+import os
 import signal
 import subprocess
 import sys
@@ -302,6 +303,14 @@ def run_oneshot():
 
 
 def main(argv=None):
+    # Safety guard: only ever run inside a real user's session. System/service
+    # accounts - crucially the GDM login greeter (user "gdm") - have a uid below
+    # 1000. Running the tray + Notify + GTK init inside the greeter session can
+    # break the login screen (black screen, no login prompt), so we bail out
+    # immediately there. Real desktop users have uid >= 1000.
+    if hasattr(os, "getuid") and os.getuid() < 1000:
+        return 0
+
     parser = argparse.ArgumentParser(description="Odoo Companion background service")
     parser.add_argument("--oneshot", action="store_true", help="run one poll and exit")
     args = parser.parse_args(argv)
