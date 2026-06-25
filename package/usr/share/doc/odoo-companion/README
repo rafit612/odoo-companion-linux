@@ -20,6 +20,19 @@ Background service (keeps notifications running with the window closed):
   systemctl --user restart odoo-companion.service
   systemctl --user enable --now odoo-companion.service   # first session
 
+Floating desktop widget:
+  Enabled by default. Shows live worked time, check-in time, live task timer,
+  current task, notification count, and idle auto-stop countdown. Drag to move;
+  it remembers position. It is partially transparent until hovered. Clicking it
+  opens Odoo Companion; hide/disable it from the widget, tray, or Settings.
+
+Timesheet timer protection:
+  The task timer warns before idle auto-stop, auto-stops after the configured
+  idle limit, and stops when the desktop locks, sleeps, shuts down, reboots, or
+  the background service exits. If shutdown happens before Odoo can be updated,
+  the corrected stop time is stored locally and retried on the next successful
+  poll.
+
 Pages: Dashboard, Attendance, Time Off, Activities, Sales, CRM, Project,
   Purchase, Inventory, Accounting, Expenses, Recruitment, Timer, Timesheets,
   Notifications, Settings. Each data page has charts, filters, search,

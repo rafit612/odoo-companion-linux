@@ -27,6 +27,10 @@ MIN_NOTIFICATION_POLL_SECONDS = 3
 # is still going - the extension hardcoded 15 min, the desktop app makes it
 # user-configurable (default 10 min, per explicit user request).
 DEFAULT_TIMER_REMINDER_MINUTES = 10
+# Stop task timers after the machine has been idle this long. This keeps the
+# timesheet line honest when someone locks the laptop or walks away.
+DEFAULT_TIMER_IDLE_MINUTES = 10
+DEFAULT_TIMER_IDLE_WARNING_SECONDS = 20
 # Grace period after the scheduled work-day start before warning that the user
 # has not checked in (and isn't on leave / it isn't a holiday). User-configurable.
 DEFAULT_ATTENDANCE_GRACE_MINUTES = 15
@@ -46,6 +50,7 @@ MUTE_LABELS = {
     "attendanceEvents": "Employee check-in/check-out alerts",
     "serverStatus": "Server online/offline alerts",
     "timesheetReminder": "Task timer still-running reminder",
+    "timesheetIdle": "Task timer idle/auto-stop alerts",
     "lunch": "Lunch vote reminders",
 }
 
@@ -98,6 +103,9 @@ DEFAULT_CONFIG = {
     "poll_minutes": DEFAULT_POLL_MINUTES,
     "notification_poll_seconds": DEFAULT_NOTIFICATION_POLL_SECONDS,
     "timer_reminder_minutes": DEFAULT_TIMER_REMINDER_MINUTES,
+    "timer_idle_minutes": DEFAULT_TIMER_IDLE_MINUTES,
+    "timer_idle_warning_seconds": DEFAULT_TIMER_IDLE_WARNING_SECONDS,
+    "timer_idle_auto_stop": True,
     "attendance_grace_minutes": DEFAULT_ATTENDANCE_GRACE_MINUTES,
     "lunch_vote_reminder_minutes": DEFAULT_LUNCH_REMINDER_MINUTES,
     "mute": {key: False for key in MUTE_LABELS},
@@ -107,6 +115,7 @@ DEFAULT_CONFIG = {
     "odoo_version": None,
     "module_access": {},
     "autostart_enabled": True,
+    "floating_widget_enabled": True,
 }
 
 DEFAULT_STATE = {
@@ -130,6 +139,9 @@ DEFAULT_STATE = {
     "last_poll_at": None,
     "last_notification_poll_at": None,
     "attendance_self": None,
+    "floating_widget_pos": None,
+    "last_service_seen_at": None,
+    "timer_stop_pending": None,
     "lunch_close_reminded_date": None,
     "lunch_workend_reminded_date": None,
 }

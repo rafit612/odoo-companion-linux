@@ -25,6 +25,7 @@ from .constants import (
     DEFAULT_ATTENDANCE_GRACE_MINUTES,
     DEFAULT_LUNCH_REMINDER_MINUTES,
     DEFAULT_NOTIFICATION_POLL_SECONDS,
+    DEFAULT_TIMER_IDLE_MINUTES,
     DEFAULT_TIMER_REMINDER_MINUTES,
     ICON_NAME,
     MIN_NOTIFICATION_POLL_SECONDS,
@@ -1682,6 +1683,16 @@ class MainWindow(Gtk.ApplicationWindow):
         self.timer_reminder_spin.set_digits(0)
         self.settings_page.append(row_box("Remind me about a running task timer every (minutes)", self.timer_reminder_spin))
 
+        self.timer_idle_spin = Gtk.SpinButton()
+        self.timer_idle_spin.set_adjustment(
+            Gtk.Adjustment(value=DEFAULT_TIMER_IDLE_MINUTES, lower=1, upper=240, step_increment=1)
+        )
+        self.timer_idle_spin.set_digits(0)
+        self.settings_page.append(row_box("Auto-stop timer after computer idle (minutes)", self.timer_idle_spin))
+
+        self.timer_idle_auto_stop_check = Gtk.CheckButton(label="Auto-stop task timer when idle limit is reached")
+        self.settings_page.append(self.timer_idle_auto_stop_check)
+
         self.attendance_grace_spin = Gtk.SpinButton()
         self.attendance_grace_spin.set_adjustment(
             Gtk.Adjustment(value=DEFAULT_ATTENDANCE_GRACE_MINUTES, lower=0, upper=240, step_increment=5)
@@ -1699,6 +1710,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.settings_page.append(section_title("Desktop integration"))
         self.autostart_check = Gtk.CheckButton(label="Start background service automatically after login")
         self.settings_page.append(self.autostart_check)
+        self.floating_widget_check = Gtk.CheckButton(label="Show floating desktop widget")
+        self.settings_page.append(self.floating_widget_check)
         desktop_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         desktop_icon = Gtk.Button(label="Create desktop icon")
         desktop_icon.connect("clicked", lambda _button: self.create_desktop_icon())
@@ -1757,9 +1770,12 @@ class MainWindow(Gtk.ApplicationWindow):
         self.poll_spin.set_value(float(config.get("poll_minutes") or 1))
         self.notification_poll_spin.set_value(float(config.get("notification_poll_seconds") or DEFAULT_NOTIFICATION_POLL_SECONDS))
         self.timer_reminder_spin.set_value(float(config.get("timer_reminder_minutes") or DEFAULT_TIMER_REMINDER_MINUTES))
+        self.timer_idle_spin.set_value(float(config.get("timer_idle_minutes") or DEFAULT_TIMER_IDLE_MINUTES))
+        self.timer_idle_auto_stop_check.set_active(bool(config.get("timer_idle_auto_stop", True)))
         self.attendance_grace_spin.set_value(float(config.get("attendance_grace_minutes") if config.get("attendance_grace_minutes") is not None else DEFAULT_ATTENDANCE_GRACE_MINUTES))
         self.lunch_reminder_spin.set_value(float(config.get("lunch_vote_reminder_minutes") or DEFAULT_LUNCH_REMINDER_MINUTES))
         self.autostart_check.set_active(bool(config.get("autostart_enabled", True)))
+        self.floating_widget_check.set_active(bool(config.get("floating_widget_enabled", True)))
         for key, check in self.mute_checks.items():
             check.set_active(bool((config.get("mute") or {}).get(key)))
         secret = lookup_secret(config.get("login"))
@@ -1836,10 +1852,13 @@ class MainWindow(Gtk.ApplicationWindow):
             "poll_minutes": max(0.5, self.poll_spin.get_value()),
             "notification_poll_seconds": max(MIN_NOTIFICATION_POLL_SECONDS, self.notification_poll_spin.get_value()),
             "timer_reminder_minutes": max(1, self.timer_reminder_spin.get_value()),
+            "timer_idle_minutes": max(1, self.timer_idle_spin.get_value()),
+            "timer_idle_auto_stop": self.timer_idle_auto_stop_check.get_active(),
             "attendance_grace_minutes": max(0, self.attendance_grace_spin.get_value()),
             "lunch_vote_reminder_minutes": max(1, self.lunch_reminder_spin.get_value()),
             "mute": mute,
             "autostart_enabled": self.autostart_check.get_active(),
+            "floating_widget_enabled": self.floating_widget_check.get_active(),
         }
 
     def test_login(self):

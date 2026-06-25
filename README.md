@@ -61,11 +61,23 @@ salesperson/employee/…), **search‑as‑you‑type**, **sortable columns**, a
 - Start/stop a timer against any of your Odoo project tasks
 - Live‑ticking clock in the app **and** in the system‑tray indicator (`⏱ 0:00:05`)
 - Checkpoints time to `account.analytic.line` so nothing is lost if the app closes
+- Idle protection for timesheets:
+  - Warns about 20 seconds before an idle auto-stop
+  - Auto-stops the running task timer after the configured computer-idle limit
+  - Stops the timer immediately when the Linux session locks or the computer suspends
+  - Marks the timer stopped on shutdown/reboot/service exit and safely flushes the
+    corrected stop time to Odoo on the next successful connection if the machine
+    powers down before the write finishes
 - Today's timesheet summary + a full team **Timesheets** page with grouping
 
 ### Desktop integration & live tray status
 - App launcher + optional desktop shortcut
 - System‑tray / app‑indicator menu (Open, Poll now, Open Odoo, autostart toggle, Quit)
+- Floating desktop widget, enabled by default:
+  - Shows live working time, check-in time, live task timer, current task, notification count, and idle auto-stop countdown
+  - Drag to move; position is remembered
+  - Partially transparent when not hovered, solid on hover
+  - Clicking the widget opens Odoo Companion; close/hide it from the widget, tray, or Settings
 - **Live attendance in the tray**, updated every second:
   - Checked in → `🟢 3:45:12` live worked time today (hover: "Checked in 10:12 · Working 3:45:12")
   - Checked out → `✓ 18:45` (hover shows last check‑out with date)
@@ -134,8 +146,8 @@ sudo apt install odoo-companion
 The background service restarts automatically and starts polling. In **Settings** you
 can tune the poll intervals (chat/calls seconds, dashboard minutes, timer‑reminder
 minutes), set the **check‑in grace/tolerance** (minutes after your scheduled start
-before the "not checked in" warning fires), and mute any notification categories you
-don't want.
+before the "not checked in" warning fires), enable/disable the floating widget, tune
+the task-timer idle auto-stop, and mute any notification categories you don't want.
 
 ---
 

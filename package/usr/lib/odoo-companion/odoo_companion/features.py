@@ -9,10 +9,18 @@ from .client import OdooClient, OdooError
 from .constants import (
     DEFAULT_ATTENDANCE_GRACE_MINUTES,
     DEFAULT_LUNCH_REMINDER_MINUTES,
+    DEFAULT_TIMER_IDLE_MINUTES,
+    DEFAULT_TIMER_IDLE_WARNING_SECONDS,
     DEFAULT_TIMER_REMINDER_MINUTES,
     NOTIFICATION_LOG_LIMIT,
 )
 from .storage import config_store, state_store
+
+try:
+    from .idle import get_user_idle_seconds
+except Exception:
+    def get_user_idle_seconds():
+        return None
 
 LUNCH_OFF_WEEKDAY = 4  # Friday - lunch voting runs every day except Friday
 
@@ -67,8 +75,24 @@ def format_clock(total_seconds):
     return f"{hours}:{minutes:02d}:{seconds:02d}"
 
 
+def elapsed_hours_at(started_at_ms, now_ms=None):
+    now_ms = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    return max(0, now_ms - int(started_at_ms)) / 1000 / 60 / 60
+
+
 def elapsed_hours(started_at_ms):
-    return (time.time() * 1000 - started_at_ms) / 1000 / 60 / 60
+    return elapsed_hours_at(started_at_ms)
+
+
+def format_minutes(total_minutes):
+    total_minutes = max(0, int(round(total_minutes or 0)))
+    hours = total_minutes // 60
+    minutes = total_minutes % 60
+    if hours and minutes:
+        return f"{hours}h {minutes}m"
+    if hours:
+        return f"{hours}h"
+    return f"{minutes}m"
 
 
 def notification_target_url(target):
@@ -645,15 +669,102 @@ class FeatureRunner:
 
         state_store.update(update)
 
+    def _timer_idle_minutes(self):
+        try:
+            return max(0.0, float(self.config.get("timer_idle_minutes") or DEFAULT_TIMER_IDLE_MINUTES))
+        except (TypeError, ValueError):
+            return float(DEFAULT_TIMER_IDLE_MINUTES)
+
+    def _timer_idle_warning_seconds(self):
+        try:
+            return max(0.0, float(self.config.get("timer_idle_warning_seconds") or DEFAULT_TIMER_IDLE_WARNING_SECONDS))
+        except (TypeError, ValueError):
+            return float(DEFAULT_TIMER_IDLE_WARNING_SECONDS)
+
+    def _clear_idle_pre_stop_warning(self, active_timer):
+        if "idle_pre_stop_warning_key" not in active_timer:
+            return
+        active_timer.pop("idle_pre_stop_warning_key", None)
+        state_store.update(lambda saved: saved.__setitem__("active_timer", active_timer))
+
+    def _handle_idle_task_timer(self, active_timer, now_ms):
+        idle_limit_minutes = self._timer_idle_minutes()
+        if idle_limit_minutes <= 0:
+            return None
+        idle_limit_seconds = idle_limit_minutes * 60
+        try:
+            idle_seconds = get_user_idle_seconds()
+        except Exception:
+            idle_seconds = None
+        if idle_seconds is None:
+            return None
+
+        target = {"kind": "record", "model": "account.analytic.line", "res_id": active_timer["line_id"]}
+        task_name = active_timer.get("task_name") or "Timer"
+        idle_text = format_minutes(math.ceil(idle_seconds / 60))
+        auto_stop = bool(self.config.get("timer_idle_auto_stop", True))
+        warning_seconds = self._timer_idle_warning_seconds()
+        warning_at_seconds = max(0.0, idle_limit_seconds - warning_seconds)
+        if idle_seconds < idle_limit_seconds:
+            if auto_stop and warning_seconds > 0 and idle_seconds >= warning_at_seconds:
+                warning_key = f"{active_timer['started_at']}-{int(idle_limit_seconds)}-{int(warning_seconds)}"
+                if active_timer.get("idle_pre_stop_warning_key") != warning_key:
+                    remaining_seconds = max(1, int(math.ceil(idle_limit_seconds - idle_seconds)))
+                    if not is_muted(self.config, "timesheetIdle"):
+                        self.notify_and_remember(
+                            f"timer-idle-pre-stop-{active_timer['line_id']}-{now_ms}",
+                            "Timer will auto-stop soon",
+                            f"{task_name} will stop in about {remaining_seconds}s if no activity is detected.",
+                            target,
+                        )
+                    active_timer["idle_pre_stop_warning_key"] = warning_key
+                    active_timer["last_reminder_at"] = now_ms
+                    state_store.update(lambda saved: saved.__setitem__("active_timer", active_timer))
+            else:
+                self._clear_idle_pre_stop_warning(active_timer)
+            return None
+
+        if auto_stop:
+            stop_at_ms = now_ms - int(max(0.0, idle_seconds - idle_limit_seconds) * 1000)
+            stop_at_ms = max(int(active_timer["started_at"]), min(now_ms, stop_at_ms))
+            hours = elapsed_hours_at(active_timer["started_at"], stop_at_ms)
+            self.client.call_kw("account.analytic.line", "write", [[active_timer["line_id"]], {"unit_amount": hours}])
+            state_store.update(lambda saved: saved.__setitem__("active_timer", None))
+            if not is_muted(self.config, "timesheetIdle"):
+                self.notify_and_remember(
+                    f"timer-idle-stop-{active_timer['line_id']}-{now_ms}",
+                    "Timer auto-stopped after idle",
+                    f"{task_name} was idle for {idle_text}. Recorded {format_clock(hours * 3600)} and stopped the timer.",
+                    target,
+                )
+            return {**active_timer, "final_hours": hours, "auto_stopped": True, "idle_seconds": idle_seconds}
+
+        last_idle_reminder_at = active_timer.get("last_idle_reminder_at") or 0
+        reminder_minutes = float(self.config.get("timer_reminder_minutes") or DEFAULT_TIMER_REMINDER_MINUTES)
+        if now_ms - last_idle_reminder_at >= max(60 * 1000, reminder_minutes * 60 * 1000):
+            if not is_muted(self.config, "timesheetIdle"):
+                self.notify_and_remember(
+                    f"timer-idle-warning-{active_timer['line_id']}-{now_ms}",
+                    "Timer running while idle",
+                    f"{task_name} has been idle for {idle_text}. Stop the timer if you are away from work.",
+                    target,
+                )
+            active_timer["last_idle_reminder_at"] = now_ms
+            state_store.update(lambda saved: saved.__setitem__("active_timer", active_timer))
+        return None
+
     def checkpoint_task_timer(self):
         active_timer = state_store.read().get("active_timer")
         if not active_timer:
             return None
-        hours = elapsed_hours(active_timer["started_at"])
+        now_ms = int(time.time() * 1000)
+        idle_result = self._handle_idle_task_timer(active_timer, now_ms)
+        if idle_result:
+            return idle_result
+        hours = elapsed_hours_at(active_timer["started_at"], now_ms)
         self.client.call_kw("account.analytic.line", "write", [[active_timer["line_id"]], {"unit_amount": hours}])
 
         last_reminder_at = active_timer.get("last_reminder_at") or active_timer["started_at"]
-        now_ms = int(time.time() * 1000)
         reminder_minutes = float(self.config.get("timer_reminder_minutes") or DEFAULT_TIMER_REMINDER_MINUTES)
         if now_ms - last_reminder_at >= reminder_minutes * 60 * 1000:
             if not is_muted(self.config, "timesheetReminder"):
@@ -697,15 +808,65 @@ class FeatureRunner:
         state_store.update(lambda saved: saved.__setitem__("active_timer", active_timer))
         return active_timer
 
-    def stop_task_timer(self, description=None):
-        active_timer = state_store.read().get("active_timer")
-        if not active_timer:
-            return None
-        hours = elapsed_hours(active_timer["started_at"])
+    def _write_finished_task_timer(self, active_timer, stopped_at_ms=None, description=None):
+        stopped_at_ms = int(time.time() * 1000) if stopped_at_ms is None else int(stopped_at_ms)
+        hours = elapsed_hours_at(active_timer["started_at"], stopped_at_ms)
         values = {"unit_amount": hours}
         if description:
             values["name"] = description
         self.client.call_kw("account.analytic.line", "write", [[active_timer["line_id"]], values])
+        return hours
+
+    def flush_pending_task_timer_stop(self):
+        pending = state_store.read().get("timer_stop_pending")
+        if not pending:
+            return None
+        stopped_at_ms = pending.get("stopped_at") or int(time.time() * 1000)
+        hours = self._write_finished_task_timer(pending, stopped_at_ms, pending.get("description"))
+
+        def clear(saved):
+            current = saved.get("timer_stop_pending") or {}
+            if current.get("line_id") == pending.get("line_id") and current.get("stopped_at") == pending.get("stopped_at"):
+                saved["timer_stop_pending"] = None
+
+        state_store.update(clear)
+        if pending.get("notify") and not is_muted(self.config, "timesheetIdle"):
+            task_name = pending.get("task_name") or "Timer"
+            reason = pending.get("stop_reason") or "system event"
+            self.notify_and_remember(
+                f"timer-system-stop-{pending['line_id']}-{stopped_at_ms}",
+                "Timer stopped automatically",
+                f"{task_name} stopped because {reason}. Recorded {format_clock(hours * 3600)}.",
+                {"kind": "record", "model": "account.analytic.line", "res_id": pending["line_id"]},
+            )
+        return {**pending, "final_hours": hours}
+
+    def close_task_timer_for_system_event(self, reason, stopped_at_ms=None, notify=True, flush=True):
+        stopped_at_ms = int(time.time() * 1000) if stopped_at_ms is None else int(stopped_at_ms)
+        active_timer = state_store.read().get("active_timer")
+        if not active_timer:
+            return self.flush_pending_task_timer_stop() if flush else None
+        pending = {
+            **active_timer,
+            "stopped_at": stopped_at_ms,
+            "stop_reason": reason,
+            "notify": bool(notify),
+        }
+
+        def mark(saved):
+            saved["active_timer"] = None
+            saved["timer_stop_pending"] = pending
+
+        state_store.update(mark)
+        if not flush:
+            return {**pending, "pending_stop": True}
+        return self.flush_pending_task_timer_stop()
+
+    def stop_task_timer(self, description=None):
+        active_timer = state_store.read().get("active_timer")
+        if not active_timer:
+            return None
+        hours = self._write_finished_task_timer(active_timer, description=description)
         state_store.update(lambda saved: saved.__setitem__("active_timer", None))
         return {**active_timer, "final_hours": hours}
 
@@ -1616,7 +1777,7 @@ class FeatureRunner:
         if not self.client.odoo_url:
             return
         self.client.ensure_logged_in()
-        for fn in (self.checkpoint_task_timer, self.poll_inbox, self.poll_channels, self.poll_calls):
+        for fn in (self.flush_pending_task_timer_stop, self.checkpoint_task_timer, self.poll_inbox, self.poll_channels, self.poll_calls):
             try:
                 fn()
             except Exception as exc:
