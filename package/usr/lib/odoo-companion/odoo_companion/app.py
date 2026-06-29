@@ -25,8 +25,6 @@ from .constants import (
     DEFAULT_ATTENDANCE_GRACE_MINUTES,
     DEFAULT_LUNCH_REMINDER_MINUTES,
     DEFAULT_NOTIFICATION_POLL_SECONDS,
-    DEFAULT_TIMER_IDLE_MINUTES,
-    DEFAULT_TIMER_REMINDER_MINUTES,
     ICON_NAME,
     MIN_NOTIFICATION_POLL_SECONDS,
     MODULE_LABELS,
@@ -482,6 +480,26 @@ class MainWindow(Gtk.ApplicationWindow):
 
     def _build_attendance_page(self):
         self.attendance_page = self.add_page("Attendance", "contact-new-symbolic")
+
+        my_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.my_attendance_label = Gtk.Label(label="Attendance: —")
+        self.my_attendance_label.set_hexpand(True)
+        self.my_attendance_label.set_halign(Gtk.Align.START)
+        my_row.append(self.my_attendance_label)
+        self.check_in_button = Gtk.Button(label="Check In")
+        self.check_in_button.connect("clicked", lambda _b: self.do_check_in())
+        my_row.append(self.check_in_button)
+        self.check_out_button = Gtk.Button(label="Check Out")
+        self.check_out_button.connect("clicked", lambda _b: self.do_check_out())
+        my_row.append(self.check_out_button)
+        self.clear_cache_button = Gtk.Button(label="Clear cache")
+        self.clear_cache_button.set_tooltip_text("Discard any offline check-in/out that hasn't synced to Odoo yet.")
+        self.clear_cache_button.connect("clicked", lambda _b: self.do_clear_attendance_cache())
+        my_row.append(self.clear_cache_button)
+        my_row.add_css_class("card")
+        self.attendance_page.append(my_row)
+        self.refresh_my_attendance()
+
         self.attendance_page.append(section_title("Today's attendance — all employees"))
 
         filters = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
@@ -628,6 +646,60 @@ class MainWindow(Gtk.ApplicationWindow):
             self._attendance_departments_loaded = True
 
         run_async(task, done)
+
+    def refresh_my_attendance(self):
+        att = state_store.read().get("attendance_self") or {}
+        pending = state_store.read().get("pending_attendance_actions") or []
+        if att.get("checked_in"):
+            text = f"Checked in since {att.get('check_in_local') or '—'}"
+        elif att.get("last_check_out_local"):
+            text = f"Checked out — last out {att.get('last_check_out_local')}"
+        else:
+            text = "Not checked in today"
+        if pending:
+            text += f"  ({len(pending)} pending sync)"
+        self.my_attendance_label.set_text(text)
+
+    def do_check_in(self):
+        self.check_in_button.set_sensitive(False)
+
+        def done(_result, error):
+            self.check_in_button.set_sensitive(True)
+            if error:
+                self.my_attendance_label.set_text(f"Check-in failed/queued offline: {error}")
+            self.refresh_my_attendance()
+
+        run_async(lambda: FeatureRunner().action_check_in(), done)
+
+    def do_check_out(self):
+        self.check_out_button.set_sensitive(False)
+
+        def done(_result, error):
+            self.check_out_button.set_sensitive(True)
+            if error:
+                self.my_attendance_label.set_text(f"Check-out failed/queued offline: {error}")
+            self.refresh_my_attendance()
+
+        run_async(lambda: FeatureRunner().action_check_out(), done)
+
+    def do_clear_attendance_cache(self):
+        dialog = Gtk.AlertDialog()
+        dialog.set_message("Clear attendance cache")
+        dialog.set_detail("This discards any offline check-in/check-out that hasn't synced to Odoo yet. Continue?")
+        dialog.set_buttons(["Cancel", "Clear"])
+        dialog.set_cancel_button(0)
+        dialog.set_default_button(0)
+
+        def on_response(dialog, result):
+            try:
+                choice = dialog.choose_finish(result)
+            except Exception:
+                return
+            if choice == 1:
+                FeatureRunner().clear_attendance_cache()
+                self.refresh_my_attendance()
+
+        dialog.choose(self, None, on_response)
 
     def refresh_attendance(self):
         if not self._attendance_departments_loaded:
@@ -1676,23 +1748,6 @@ class MainWindow(Gtk.ApplicationWindow):
         self.notification_poll_spin.set_digits(0)
         self.settings_page.append(row_box("Check for chats/calls/mentions every (seconds)", self.notification_poll_spin))
 
-        self.timer_reminder_spin = Gtk.SpinButton()
-        self.timer_reminder_spin.set_adjustment(
-            Gtk.Adjustment(value=DEFAULT_TIMER_REMINDER_MINUTES, lower=1, upper=120, step_increment=1)
-        )
-        self.timer_reminder_spin.set_digits(0)
-        self.settings_page.append(row_box("Remind me about a running task timer every (minutes)", self.timer_reminder_spin))
-
-        self.timer_idle_spin = Gtk.SpinButton()
-        self.timer_idle_spin.set_adjustment(
-            Gtk.Adjustment(value=DEFAULT_TIMER_IDLE_MINUTES, lower=1, upper=240, step_increment=1)
-        )
-        self.timer_idle_spin.set_digits(0)
-        self.settings_page.append(row_box("Auto-stop timer after computer idle (minutes)", self.timer_idle_spin))
-
-        self.timer_idle_auto_stop_check = Gtk.CheckButton(label="Auto-stop task timer when idle limit is reached")
-        self.settings_page.append(self.timer_idle_auto_stop_check)
-
         self.attendance_grace_spin = Gtk.SpinButton()
         self.attendance_grace_spin.set_adjustment(
             Gtk.Adjustment(value=DEFAULT_ATTENDANCE_GRACE_MINUTES, lower=0, upper=240, step_increment=5)
@@ -1712,6 +1767,8 @@ class MainWindow(Gtk.ApplicationWindow):
         self.settings_page.append(self.autostart_check)
         self.floating_widget_check = Gtk.CheckButton(label="Show floating desktop widget")
         self.settings_page.append(self.floating_widget_check)
+        self.gif_popups_check = Gtk.CheckButton(label="Show fun GIF popups for attendance & timer reminders")
+        self.settings_page.append(self.gif_popups_check)
         desktop_actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         desktop_icon = Gtk.Button(label="Create desktop icon")
         desktop_icon.connect("clicked", lambda _button: self.create_desktop_icon())
@@ -1769,13 +1826,11 @@ class MainWindow(Gtk.ApplicationWindow):
         self.login_entry.set_text(config.get("login") or "")
         self.poll_spin.set_value(float(config.get("poll_minutes") or 1))
         self.notification_poll_spin.set_value(float(config.get("notification_poll_seconds") or DEFAULT_NOTIFICATION_POLL_SECONDS))
-        self.timer_reminder_spin.set_value(float(config.get("timer_reminder_minutes") or DEFAULT_TIMER_REMINDER_MINUTES))
-        self.timer_idle_spin.set_value(float(config.get("timer_idle_minutes") or DEFAULT_TIMER_IDLE_MINUTES))
-        self.timer_idle_auto_stop_check.set_active(bool(config.get("timer_idle_auto_stop", True)))
         self.attendance_grace_spin.set_value(float(config.get("attendance_grace_minutes") if config.get("attendance_grace_minutes") is not None else DEFAULT_ATTENDANCE_GRACE_MINUTES))
         self.lunch_reminder_spin.set_value(float(config.get("lunch_vote_reminder_minutes") or DEFAULT_LUNCH_REMINDER_MINUTES))
         self.autostart_check.set_active(bool(config.get("autostart_enabled", True)))
         self.floating_widget_check.set_active(bool(config.get("floating_widget_enabled", True)))
+        self.gif_popups_check.set_active(bool(config.get("gif_popups_enabled", True)))
         for key, check in self.mute_checks.items():
             check.set_active(bool((config.get("mute") or {}).get(key)))
         secret = lookup_secret(config.get("login"))
@@ -1851,14 +1906,12 @@ class MainWindow(Gtk.ApplicationWindow):
             "login": self.login_entry.get_text().strip(),
             "poll_minutes": max(0.5, self.poll_spin.get_value()),
             "notification_poll_seconds": max(MIN_NOTIFICATION_POLL_SECONDS, self.notification_poll_spin.get_value()),
-            "timer_reminder_minutes": max(1, self.timer_reminder_spin.get_value()),
-            "timer_idle_minutes": max(1, self.timer_idle_spin.get_value()),
-            "timer_idle_auto_stop": self.timer_idle_auto_stop_check.get_active(),
             "attendance_grace_minutes": max(0, self.attendance_grace_spin.get_value()),
             "lunch_vote_reminder_minutes": max(1, self.lunch_reminder_spin.get_value()),
             "mute": mute,
             "autostart_enabled": self.autostart_check.get_active(),
             "floating_widget_enabled": self.floating_widget_check.get_active(),
+            "gif_popups_enabled": self.gif_popups_check.get_active(),
         }
 
     def test_login(self):

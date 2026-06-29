@@ -16,10 +16,12 @@ from gi.repository import Gio, GLib, Notify
 
 from .constants import (
     APP_NAME,
+    ASSETS_DIR,
     DATA_DIR,
     DEFAULT_TIMER_IDLE_MINUTES,
     DEFAULT_NOTIFICATION_POLL_SECONDS,
     DESKTOP_ID,
+    GIF_POPUP_FILES,
     ICON_NAME,
     MIN_NOTIFICATION_POLL_SECONDS,
     SERVER_STATUS_INTERVAL_SECONDS,
@@ -42,10 +44,82 @@ def _clip(text, limit):
     return text[: max(0, limit - 1)].rstrip() + "..."
 
 
+class GifPopupWindow:
+    """Frameless, always-on-top animated-GIF popup, auto-closes itself.
+
+    GTK4 dropped set_keep_above(), so - same workaround as FloatingWidget
+    below - this loads GTK3 in its own namespace (a separate process from the
+    GTK4+Adw app.py GUI, so there's no ABI conflict) purely for "stay on top
+    of whatever the employee is doing" behaviour."""
+
+    _Gtk = None
+    _GdkPixbuf = None
+    _unavailable = False
+
+    @classmethod
+    def _ensure_loaded(cls):
+        if cls._Gtk is not None or cls._unavailable:
+            return cls._Gtk is not None
+        try:
+            gi.require_version("Gtk", "3.0")
+            from gi.repository import Gtk, GdkPixbuf
+
+            cls._Gtk = Gtk
+            cls._GdkPixbuf = GdkPixbuf
+            return True
+        except Exception as exc:
+            cls._unavailable = True
+            print(f"Odoo Companion: GIF popups unavailable: {exc}", file=sys.stderr)
+            return False
+
+    @classmethod
+    def show(cls, gif_path, duration_seconds=5):
+        if not cls._ensure_loaded():
+            return
+        Gtk, GdkPixbuf = cls._Gtk, cls._GdkPixbuf
+        try:
+            anim = GdkPixbuf.PixbufAnimation.new_from_file(gif_path)
+        except Exception as exc:
+            print(f"Odoo Companion: could not load GIF {gif_path}: {exc}", file=sys.stderr)
+            return
+        window = Gtk.Window(type=Gtk.WindowType.TOPLEVEL)
+        window.set_decorated(False)
+        window.set_keep_above(True)
+        window.set_resizable(False)
+        window.set_accept_focus(False)
+        image = Gtk.Image.new_from_animation(anim)
+        window.add(image)
+        window.show_all()
+        screen = window.get_screen()
+        try:
+            monitor = screen.get_display().get_monitor(0).get_geometry()
+            width, height = anim.get_width(), anim.get_height()
+            window.move(monitor.x + monitor.width - width - 40, monitor.y + monitor.height - height - 80)
+        except Exception:
+            pass
+
+        def _close():
+            window.destroy()
+            return False
+
+        GLib.timeout_add_seconds(duration_seconds, _close)
+
+
 class NativeNotifier:
     def __init__(self):
         Notify.init(APP_NAME)
         self._notifications = {}
+
+    def show_gif(self, kind):
+        if not config_store.read().get("gif_popups_enabled", True):
+            return
+        filename = GIF_POPUP_FILES.get(kind)
+        if not filename:
+            return
+        path = ASSETS_DIR / filename
+        if not path.exists():
+            return
+        GLib.idle_add(lambda: (GifPopupWindow.show(str(path)), False)[1])
 
     def show(self, entry):
         notification = Notify.Notification.new(entry["title"], (entry.get("body") or "")[:300], ICON_NAME)
@@ -506,6 +580,8 @@ class OdooCompanionService:
             return 0
 
         self._recover_timer_after_restart()
+        if config_store.read().get("odoo_url"):
+            threading.Thread(target=self._run_auto_checkin, daemon=True).start()
         self.tray = TrayIndicator(self)
         self.floating = FloatingWidget(self)
         self.apply_floating_setting()
@@ -797,6 +873,12 @@ class OdooCompanionService:
 
             state_store.update(update)
             self.next_poll_at = time.monotonic() + 30
+
+    def _run_auto_checkin(self):
+        try:
+            FeatureRunner(notifier=self.notifier).attempt_auto_checkin()
+        except Exception as exc:
+            print(f"Odoo Companion auto-checkin failed: {exc}", file=sys.stderr)
 
     def _run_server_check(self):
         try:

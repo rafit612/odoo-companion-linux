@@ -5,6 +5,8 @@ import urllib.parse
 import webbrowser
 from datetime import datetime, timedelta, timezone
 
+import requests
+
 from .client import OdooClient, OdooError
 from .constants import (
     DEFAULT_ATTENDANCE_GRACE_MINUTES,
@@ -33,6 +35,9 @@ ATTENDANCE_REMINDER_INTERVAL_SECONDS = 60 * 60
 STALE_LEAD_DAYS = 7
 STALE_LEAD_REMINDER_INTERVAL_SECONDS = 24 * 60 * 60
 MEETING_LOOKAHEAD_MINUTES = 10
+GEOLOCATION_LOOKUP_URL = "https://ipapi.co/json/"
+GEOLOCATION_LOOKUP_TIMEOUT_SECONDS = 4
+PENDING_ATTENDANCE_TTL_DAYS = 7
 
 
 def strip_html(html):
@@ -151,6 +156,16 @@ class FeatureRunner:
         append_notification(entry)
         if self.notifier:
             self.notifier.show(entry)
+
+    def notify_gif(self, kind):
+        """Best-effort fun-GIF popup for an attendance/timer event. Never raises."""
+        if not self.config.get("gif_popups_enabled", True):
+            return
+        if self.notifier and hasattr(self.notifier, "show_gif"):
+            try:
+                self.notifier.show_gif(kind)
+            except Exception as exc:
+                print(f"Odoo Companion: show_gif({kind}) failed: {exc}")
 
     def get_employee_id(self):
         if self.config.get("employee_id"):
@@ -509,6 +524,178 @@ class FeatureRunner:
             {"kind": "reminder", "url": f"{self.client.odoo_url}/odoo/time-off", "snooze_key": "attendance_reminder_at"},
         )
 
+    def is_checked_in_today(self, employee_id=None):
+        employee_id = employee_id or self.get_employee_id()
+        if not employee_id:
+            return False
+        bounds = local_day_bounds_for_odoo()
+        count = self.client.call_kw(
+            "hr.attendance",
+            "search_count",
+            [[["employee_id", "=", employee_id], ["check_in", ">=", bounds["start"]], ["check_in", "<=", bounds["end"]]]],
+        )
+        return bool(count)
+
+    def lookup_geolocation(self):
+        """Best-effort IP geolocation for attendance records. Never raises."""
+        try:
+            response = requests.get(GEOLOCATION_LOOKUP_URL, timeout=GEOLOCATION_LOOKUP_TIMEOUT_SECONDS)
+            data = response.json()
+        except Exception:
+            return None
+        latitude = data.get("latitude")
+        longitude = data.get("longitude")
+        ip_address = data.get("ip")
+        if latitude is None or longitude is None:
+            return None
+        return {"latitude": latitude, "longitude": longitude, "ip": ip_address}
+
+    def _attendance_geo_vals(self, prefix):
+        geo = self.lookup_geolocation()
+        if not geo:
+            return {}
+        vals = {f"{prefix}_latitude": geo["latitude"], f"{prefix}_longitude": geo["longitude"]}
+        if geo.get("ip"):
+            vals[f"{prefix}_ip_address"] = geo["ip"]
+        return vals
+
+    def _perform_attendance(self, kind, captured_at):
+        employee_id = self.get_employee_id()
+        if not employee_id:
+            raise OdooError("No employee linked to this user.")
+        if kind == "in":
+            if self.is_checked_in_today(employee_id):
+                return {"skipped": "already_checked_in"}
+            vals = {"employee_id": employee_id, "check_in": to_odoo_datetime(captured_at)}
+            vals.update(self._attendance_geo_vals("in"))
+            record_id = self.client.call_kw("hr.attendance", "create", [vals])
+            self._notify_late_or_on_time(record_id)
+        else:
+            open_sessions = self.client.call_kw(
+                "hr.attendance",
+                "search_read",
+                [[["employee_id", "=", employee_id], ["check_out", "=", False]], ["id"]],
+                {"order": "check_in desc", "limit": 1},
+            )
+            if not open_sessions:
+                return {"skipped": "no_open_session"}
+            vals = {"check_out": to_odoo_datetime(captured_at)}
+            vals.update(self._attendance_geo_vals("out"))
+            self.client.call_kw("hr.attendance", "write", [[open_sessions[0]["id"]], vals])
+        self.cache_self_attendance()
+        return {"ok": True}
+
+    def _queue_pending_attendance(self, kind, captured_at):
+        today_key = local_date_str()
+
+        def update(saved):
+            pending = list(saved.get("pending_attendance_actions") or [])
+            if any(e.get("kind") == kind and e.get("date") == today_key for e in pending):
+                return
+            pending.append({"kind": kind, "captured_at": to_odoo_datetime(captured_at), "date": today_key})
+            saved["pending_attendance_actions"] = pending
+
+        state_store.update(update)
+
+    def action_check_in(self, check_in_override=None):
+        captured_at = check_in_override or datetime.now().astimezone()
+        try:
+            return self._perform_attendance("in", captured_at)
+        except OdooError:
+            self._queue_pending_attendance("in", captured_at)
+            raise
+
+    def action_check_out(self):
+        captured_at = datetime.now().astimezone()
+        try:
+            return self._perform_attendance("out", captured_at)
+        except OdooError:
+            self._queue_pending_attendance("out", captured_at)
+            raise
+
+    def attempt_auto_checkin(self):
+        """Run once at startup. Silently skips if already checked in today;
+        if offline, action_check_in() queues the captured boot time for later."""
+        try:
+            if self.is_checked_in_today():
+                return
+        except OdooError:
+            pass
+        try:
+            self.action_check_in()
+        except OdooError as exc:
+            print(f"Odoo Companion: attempt_auto_checkin failed/queued: {exc}")
+
+    def flush_pending_attendance(self):
+        pending = state_store.read().get("pending_attendance_actions") or []
+        if not pending:
+            return
+        today_key = local_date_str()
+        cutoff = datetime.now().astimezone() - timedelta(days=PENDING_ATTENDANCE_TTL_DAYS)
+        remaining = []
+        for entry in pending:
+            captured_at = parse_odoo_datetime(entry.get("captured_at"))
+            if entry.get("date") != today_key or (captured_at and captured_at < cutoff):
+                continue  # stale: never backfill a past day's check-in/out
+            try:
+                self._perform_attendance(entry["kind"], captured_at or datetime.now().astimezone())
+            except OdooError:
+                remaining.append(entry)
+        state_store.update(lambda saved: saved.__setitem__("pending_attendance_actions", remaining))
+
+    def clear_attendance_cache(self):
+        state_store.update(lambda saved: saved.__setitem__("pending_attendance_actions", []))
+
+    def _notify_late_or_on_time(self, attendance_id):
+        """Odoo computes is_within_tolerance from the employee's schedule + the
+        company's late-arrival tolerance - read it back rather than re-deriving
+        the schedule math ourselves."""
+        try:
+            rows = self.client.call_kw("hr.attendance", "read", [[attendance_id], ["is_within_tolerance"]])
+        except OdooError:
+            return
+        if not rows or rows[0].get("is_within_tolerance") is None:
+            return
+        self.notify_gif("on_time" if rows[0]["is_within_tolerance"] else "late")
+
+    def poll_workday_end_gif(self):
+        if not self.config.get("gif_popups_enabled", True):
+            return
+        now = datetime.now().astimezone()
+        now_f = now.hour + now.minute / 60 + now.second / 3600
+        today_key = now.date().isoformat()
+        if state_store.read().get("workday_end_gif_date") == today_key:
+            return
+        if self._workday_ended(now_f):
+            state_store.update(lambda s: s.__setitem__("workday_end_gif_date", today_key))
+            self.notify_gif("workday_end")
+
+    def poll_no_timer_gif(self):
+        if not self.config.get("gif_popups_enabled", True):
+            return
+        state = state_store.read()
+        if state.get("active_timer"):
+            return
+        today_key = local_date_str()
+        if state.get("last_timer_start_date") == today_key:
+            return  # a timer was started (even if since stopped) - nothing to nag about
+        att = state.get("attendance_self") or {}
+        if not att.get("checked_in") or not att.get("current_start_epoch"):
+            return
+        if time.time() - att["current_start_epoch"] < 60 * 60:
+            return
+        last_at = state.get("no_timer_gif_at") if state.get("no_timer_gif_date") == today_key else None
+        now_ms = int(time.time() * 1000)
+        if last_at and now_ms - last_at < ATTENDANCE_REMINDER_INTERVAL_SECONDS * 1000:
+            return
+
+        def update(saved):
+            saved["no_timer_gif_at"] = now_ms
+            saved["no_timer_gif_date"] = today_key
+
+        state_store.update(update)
+        self.notify_gif("no_timer")
+
     def poll_stale_leads(self):
         if is_muted(self.config, "crm"):
             return
@@ -805,7 +992,11 @@ class FeatureRunner:
             "line_id": line_id,
             "started_at": int(time.time() * 1000),
         }
-        state_store.update(lambda saved: saved.__setitem__("active_timer", active_timer))
+        def update(saved):
+            saved["active_timer"] = active_timer
+            saved["last_timer_start_date"] = local_date_str()
+
+        state_store.update(update)
         return active_timer
 
     def _write_finished_task_timer(self, active_timer, stopped_at_ms=None, description=None):
@@ -1791,11 +1982,14 @@ class FeatureRunner:
         for fn in (
             self.cache_self_attendance,
             self.poll_attendance_reminder,
+            self.flush_pending_attendance,
             self.poll_stale_leads,
             self.poll_meetings_starting_soon,
             self.poll_helpdesk_sla,
             self.poll_attendance_events,
             self.poll_lunch_vote,
+            self.poll_workday_end_gif,
+            self.poll_no_timer_gif,
         ):
             try:
                 fn()

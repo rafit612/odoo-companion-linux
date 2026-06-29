@@ -3,12 +3,13 @@ import os
 
 APP_ID = "com.dotbdsolutions.OdooCompanion"
 APP_NAME = "Odoo Companion"
-APP_VERSION = "2.22.0"
+APP_VERSION = "2.23.0"
 DESKTOP_ID = "odoo-companion"
 ICON_NAME = "odoo-companion"
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "odoo-companion"
 DATA_DIR = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "odoo-companion"
+ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
 CONFIG_FILE = CONFIG_DIR / "config.json"
 STATE_FILE = DATA_DIR / "state.json"
@@ -116,6 +117,14 @@ DEFAULT_CONFIG = {
     "module_access": {},
     "autostart_enabled": True,
     "floating_widget_enabled": True,
+    "gif_popups_enabled": True,
+}
+
+GIF_POPUP_FILES = {
+    "late": "late.gif",
+    "on_time": "on_time.gif",
+    "workday_end": "workday_end.gif",
+    "no_timer": "no_timer.gif",
 }
 
 DEFAULT_STATE = {
@@ -144,4 +153,9 @@ DEFAULT_STATE = {
     "timer_stop_pending": None,
     "lunch_close_reminded_date": None,
     "lunch_workend_reminded_date": None,
+    "pending_attendance_actions": [],
+    "workday_end_gif_date": None,
+    "no_timer_gif_at": None,
+    "no_timer_gif_date": None,
+    "last_timer_start_date": None,
 }
